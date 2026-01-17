@@ -6,8 +6,8 @@ from ultralytics import YOLO
 import cv2
 
 # Set these variables directly
-model_path = "outputs/yolo/best.pt"  # Change to your model path
-image_path = "dataset/raw/test/images/China_Drone_000186.jpg"  # Change to your image path
+model_path = "outputs/yolo/best-yolo.pt"  # Change to your model path
+image_path = "dataset/raw/test/images/China_Drone_000738.jpg"  # Change to your image path
 conf = 0.25  # Confidence threshold
 
 # Class names (must match training)
