@@ -23,7 +23,7 @@ except ImportError:
 
 # ============ CONFIG - EDIT THESE PATHS ============
 MODEL_PATH = "outputs/u-net/best_unet_model.pth"  # Path to your trained model
-IMAGE_PATH = "test_image.jpg"                     # Path to image to predict
+IMAGE_PATH = "dataset/raw/test/images/China_Drone_000738.jpg"                     # Path to image to predict
 OUTPUT_DIR = "predictions"                        # Where to save results
 DEVICE = "cuda"                                   # "cuda" or "cpu"
 
