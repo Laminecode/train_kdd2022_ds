@@ -1,6 +1,7 @@
 """
-predict_damage.py - Road Damage Prediction Script
+predict_unet_v2.py - Road Damage Prediction for U-Net Model
 Predicts damage types from raw images using trained U-Net model
+Compatible with train_unet_colab042.ipynb training script
 """
 
 import os
@@ -21,23 +22,24 @@ except ImportError:
     sys.exit(1)
 
 # ============ CONFIG - EDIT THESE PATHS ============
-MODEL_PATH = "outputs/u-net/best_unet_model (1).pth"  # Path to your trained model
-IMAGE_PATH = "dataset/raw/test/images/China_Drone_000186.jpg"         # Path to image to predict
-OUTPUT_DIR = "predictions"            # Where to save results
-DEVICE = "cuda"                       # "cuda" or "cpu"
+MODEL_PATH = "outputs/u-net/best_unet_model.pth"  # Path to your trained model
+IMAGE_PATH = "test_image.jpg"                     # Path to image to predict
+OUTPUT_DIR = "predictions"                        # Where to save results
+DEVICE = "cuda"                                   # "cuda" or "cpu"
 
-# Model configuration
+# Model configuration (MUST match training)
 IMG_SIZE = 640
 NUM_CLASSES = 6
 ENCODER = 'resnet34'
 
+# Class names - MATCHES train_unet_colab042.ipynb exactly
 CLASS_NAMES = [
     'Background',
     'Longitudinal_crack',
     'Transverse_crack',
     'Alligator_crack',
-    'Pothole',           # Class 4 (matches your OLD trained model)
-    'Other_damage'       # Class 5 (matches your OLD trained model)
+    'Other_damage',
+    'Pothole'
 ]
 
 # Color map for visualization (BGR format for OpenCV)
@@ -46,8 +48,8 @@ COLORS = np.array([
     [0, 0, 255],     # Longitudinal crack - Red
     [0, 255, 0],     # Transverse crack - Green
     [255, 0, 0],     # Alligator crack - Blue
-    [0, 255, 255],   # Pothole - Yellow (matches OLD model)
-    [255, 0, 255]    # Other damage - Magenta (matches OLD model)
+    [255, 255, 0],   # Other damage - Yellow
+    [255, 0, 255]    # Pothole - Magenta
 ], dtype=np.uint8)
 
 
@@ -69,7 +71,6 @@ def load_model(model_path, device):
         raise FileNotFoundError(f"Model file not found: {model_path}")
     
     # PyTorch 2.6+ security: set weights_only=False for trusted checkpoints
-    # This is safe for models you trained yourself
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     
     # Handle different checkpoint formats
@@ -121,7 +122,14 @@ def predict_mask(model, image_tensor, device):
     """Run inference and get predicted mask."""
     with torch.no_grad():
         image_tensor = image_tensor.to(device)
-        output = model(image_tensor)
+        
+        # Use mixed precision if available
+        if device.type == 'cuda':
+            with torch.cuda.amp.autocast():
+                output = model(image_tensor)
+        else:
+            output = model(image_tensor)
+        
         pred_mask = torch.argmax(output, dim=1).cpu().numpy()[0]
     
     return pred_mask
@@ -162,7 +170,7 @@ def create_visualization(original_image_path, pred_mask, output_path, stats):
     # Create result image with three panels + stats panel below
     panel_width = IMG_SIZE
     panel_height = IMG_SIZE
-    stats_height = 180  # Height for statistics panel
+    stats_height = 200  # Height for statistics panel
     
     # Main visualization (3 panels side by side)
     result = np.zeros((panel_height + stats_height, panel_width * 3, 3), dtype=np.uint8)
@@ -178,16 +186,16 @@ def create_visualization(original_image_path, pred_mask, output_path, stats):
     cv2.putText(result, "Prediction", (panel_width + 10, 30), font, 1, (255, 255, 255), 2)
     cv2.putText(result, "Overlay", (panel_width*2 + 10, 30), font, 1, (255, 255, 255), 2)
     
-    # Bottom panel: statistics with black background
+    # Bottom panel: statistics with dark background
     stats_start_y = panel_height
     result[stats_start_y:, :] = (30, 30, 30)  # Dark gray background
     
     # Add statistics title
-    title_y = stats_start_y + 35
-    cv2.putText(result, "Damage Analysis:", (20, title_y), font, 0.8, (255, 255, 255), 2)
+    title_y = stats_start_y + 40
+    cv2.putText(result, "Damage Analysis:", (20, title_y), font, 0.9, (255, 255, 255), 2)
     
-    # Add class legend and percentages
-    y = title_y + 40
+    # Add class legend and percentages (3 columns)
+    y = title_y + 50
     x_col1 = 20
     x_col2 = panel_width + 20
     x_col3 = panel_width*2 + 20
@@ -208,18 +216,23 @@ def create_visualization(original_image_path, pred_mask, output_path, stats):
             
             # Draw colored square indicator
             color = tuple(int(c) for c in COLORS[class_id])
-            cv2.rectangle(result, (x_pos, y-15), (x_pos+20, y-5), color, -1)
-            cv2.rectangle(result, (x_pos, y-15), (x_pos+20, y-5), (255, 255, 255), 1)
+            cv2.rectangle(result, (x_pos, y-18), (x_pos+25, y-3), color, -1)
+            cv2.rectangle(result, (x_pos, y-18), (x_pos+25, y-3), (255, 255, 255), 1)
             
             # Draw text
             text = f"{stat['name']}: {stat['percentage']:.2f}%"
-            cv2.putText(result, text, (x_pos + 30, y), font, 0.5, (255, 255, 255), 1)
+            cv2.putText(result, text, (x_pos + 35, y), font, 0.55, (255, 255, 255), 1)
             
             # Move to next position
             col += 1
             if col >= 3:
                 col = 0
-                y += 30
+                y += 35
+    
+    # Add "No damage detected" message if needed
+    if all(stats.get(i, {}).get('percentage', 0) < 0.1 for i in range(1, NUM_CLASSES)):
+        cv2.putText(result, "No significant damage detected", 
+                    (x_col1, title_y + 50), font, 0.7, (0, 255, 0), 2)
     
     # Save result
     cv2.imwrite(str(output_path), result)
@@ -292,86 +305,10 @@ def predict_single_image(image_path, model_path, output_dir, device='cuda'):
     return pred_mask, stats
 
 
-def predict_batch(input_dir, model_path, output_dir, device='cuda'):
-    """Predict damage for all images in a directory."""
-    print(f"\n{'='*60}")
-    print(f"📁 Batch Processing: {input_dir}")
-    print(f"{'='*60}")
-    
-    # Get all images
-    image_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
-    image_paths = []
-    for ext in image_extensions:
-        image_paths.extend(Path(input_dir).glob(f"*{ext}"))
-        image_paths.extend(Path(input_dir).glob(f"*{ext.upper()}"))
-    
-    if not image_paths:
-        print(f"❌ No images found in {input_dir}")
-        return
-    
-    print(f"📸 Found {len(image_paths)} images")
-    
-    # Setup device
-    if device == 'cuda' and not torch.cuda.is_available():
-        print("⚠️  CUDA not available, using CPU")
-        device = 'cpu'
-    device = torch.device(device)
-    
-    # Load model once
-    model = load_model(model_path, device)
-    
-    # Process each image
-    results = []
-    for i, image_path in enumerate(image_paths, 1):
-        print(f"\n[{i}/{len(image_paths)}] Processing: {image_path.name}")
-        
-        try:
-            # Preprocess
-            image_tensor, _ = preprocess_image(image_path)
-            
-            # Predict
-            pred_mask = predict_mask(model, image_tensor, device)
-            
-            # Analyze
-            stats = analyze_prediction(pred_mask)
-            
-            # Visualize
-            os.makedirs(output_dir, exist_ok=True)
-            output_path = os.path.join(output_dir, f"{image_path.stem}_prediction.png")
-            create_visualization(image_path, pred_mask, output_path, stats)
-            
-            # Save mask
-            mask_path = os.path.join(output_dir, f"{image_path.stem}_mask.png")
-            cv2.imwrite(mask_path, pred_mask)
-            
-            results.append({
-                'image': image_path.name,
-                'stats': stats,
-                'status': 'success'
-            })
-            
-        except Exception as e:
-            print(f"❌ Error processing {image_path.name}: {e}")
-            results.append({
-                'image': image_path.name,
-                'status': 'error',
-                'error': str(e)
-            })
-    
-    # Summary
-    print(f"\n{'='*60}")
-    print(f"📊 BATCH PROCESSING COMPLETE")
-    print(f"{'='*60}")
-    successful = sum(1 for r in results if r['status'] == 'success')
-    print(f"✅ Successful: {successful}/{len(results)}")
-    print(f"📁 Results saved to: {output_dir}")
-    print(f"{'='*60}")
-
-
 def main():
     """Main function - runs prediction with paths defined at top of file."""
     print(f"\n{'='*60}")
-    print(f"🚀 ROAD DAMAGE PREDICTION")
+    print(f"🚀 ROAD DAMAGE PREDICTION (U-Net)")
     print(f"{'='*60}")
     print(f"📦 Model: {MODEL_PATH}")
     print(f"📸 Image: {IMAGE_PATH}")

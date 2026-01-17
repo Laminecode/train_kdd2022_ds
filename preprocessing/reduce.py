@@ -1,6 +1,7 @@
 """
 Reduce dataset size with CLASS-BALANCED sampling.
-Ensures each class has a target number of images (or all available if fewer).
+Ensures each class has EXACTLY the target number of instances.
+Handles multi-class images intelligently.
 """
 import os
 import shutil
@@ -10,118 +11,176 @@ from collections import defaultdict, Counter
 # ============ CONFIG ============
 SEED = 42
 
-# Target samples PER CLASS (not total images!)
-# Set to None for a class to include ALL available images for that class
-# Set to a number to limit that class
+# Target INSTANCES PER CLASS (not images!)
+# Each instance of a class in an image counts toward this target
 SAMPLES_PER_CLASS = {
-    0: 700,   # Longitudinal crack - reduce from 2345
-    1: 700,   # Transverse crack - reduce from 1065
-    2: 700,   # Alligator crack - reduce from 998
-    3: 700,   # Pothole - reduce from 1061
-    4: 700,   # Other damage - keep all 560 (will use all available)
+    0: 3000,   # Longitudinal crack
+    1: 3000,   # Transverse crack
+    2: 3000,   # Alligator crack
+    3: 3000,   # Other damage
+    4: 3000,   # Pothole
 }
 
-# If True: also include background-only images (empty labels)
-# IMPORTANT: You need some background-only images so the model learns what "no damage" looks like
 INCLUDE_BACKGROUND_ONLY = True
-MAX_BACKGROUND_ONLY = 280  # Max background-only images to include (adjust as needed)
+MAX_BACKGROUND_ONLY = 350  # Max background-only images to include
 
 # Paths
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Option 1: Automatic path detection (current method)
+PROJECT_ROOT = r"C:\Users\hp\Desktop\DeepLearning\train_kdd_ds"
+
+# Option 2: Manual path specification (UNCOMMENT and MODIFY if needed)
+# PROJECT_ROOT = r"C:\Users\hp\Desktop\DeepLearning"
+
 RAW_DIR = os.path.join(PROJECT_ROOT, "dataset/raw")
 REDUCED_DIR = os.path.join(PROJECT_ROOT, "dataset/reduced")
 
+# Debug: Print paths to verify
+print(f"DEBUG - Script location: {__file__}")
+print(f"DEBUG - PROJECT_ROOT: {PROJECT_ROOT}")
+print(f"DEBUG - RAW_DIR: {RAW_DIR}")
+print(f"DEBUG - Looking for: {os.path.join(RAW_DIR, 'train', 'images')}")
+
+
+def count_class_instances(label_path):
+    """Count how many times each class appears in a label file."""
+    class_counts = Counter()
+    if os.path.exists(label_path):
+        try:
+            with open(label_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if parts:
+                        try:
+                            cls = int(float(parts[0]))
+                            class_counts[cls] += 1
+                        except:
+                            pass
+        except:
+            pass
+    return class_counts
+
 
 def analyze_split(src_images, src_labels):
-    """Analyze images and build class mappings."""
+    """Analyze images and build class mappings with instance counts."""
     images = [f for f in os.listdir(src_images) if f.lower().endswith(('.jpg', '.png', '.jpeg'))]
     
-    # Map: class_id -> list of images containing that class
+    # Map: class_id -> list of (image, instance_count) tuples
     class_to_images = defaultdict(list)
-    # Map: image -> set of classes
-    image_to_classes = {}
-    # List of background-only images (empty labels)
+    # Map: image -> Counter of class instances
+    image_to_class_counts = {}
+    # List of background-only images
     background_only = []
     
     for img_name in images:
         label_name = os.path.splitext(img_name)[0] + ".txt"
         label_path = os.path.join(src_labels, label_name)
         
-        classes = set()
-        if os.path.exists(label_path):
-            try:
-                with open(label_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        parts = line.strip().split()
-                        if parts:
-                            try:
-                                cls = int(float(parts[0]))
-                                classes.add(cls)
-                            except:
-                                pass
-            except:
-                pass
+        class_counts = count_class_instances(label_path)
+        image_to_class_counts[img_name] = class_counts
         
-        image_to_classes[img_name] = classes
-        
-        if not classes:
+        if not class_counts:
             background_only.append(img_name)
         else:
-            for cls in classes:
-                class_to_images[cls].append(img_name)
+            for cls, count in class_counts.items():
+                class_to_images[cls].append((img_name, count))
     
-    return class_to_images, image_to_classes, background_only
+    return class_to_images, image_to_class_counts, background_only
 
 
-def balanced_sample(class_to_images, image_to_classes, background_only, 
-                    samples_per_class, include_bg=False, max_bg=200):
+def exact_balanced_sample(class_to_images, image_to_class_counts, background_only,
+                          samples_per_class, include_bg=False, max_bg=200):
     """
-    Select images ensuring each class has up to `samples_per_class[cls]` samples.
-    An image can count toward multiple classes if it contains multiple damage types.
+    Select images to get EXACTLY the target number of instances per class.
+    Uses greedy algorithm with smart ordering.
     """
     selected = set()
-    class_counts = Counter()
+    class_instance_counts = Counter()
+    
+    # Calculate total available instances per class
+    available_instances = {}
+    for cls, img_list in class_to_images.items():
+        available_instances[cls] = sum(count for _, count in img_list)
+    
+    print(f"\n  Available instances per class: {dict(sorted(available_instances.items()))}")
     
     # Sort classes by rarity (rarest first) to prioritize them
-    all_classes = sorted(class_to_images.keys(), key=lambda c: len(class_to_images[c]))
+    all_classes = sorted(class_to_images.keys(), 
+                        key=lambda c: available_instances.get(c, 0))
     
-    print(f"\n  Available per class: {dict((c, len(class_to_images[c])) for c in sorted(class_to_images.keys()))}")
-    
-    # For each class, select images until we hit the target
+    # Greedy selection: prioritize rarest classes first
     for cls in all_classes:
-        target = samples_per_class.get(cls, None)
-        if target is None:
-            target = len(class_to_images[cls])  # Use all
+        target = samples_per_class.get(cls, available_instances[cls])
         
-        # Get images for this class, prioritize ones not yet selected
-        available = class_to_images[cls]
-        random.shuffle(available)
+        if target > available_instances[cls]:
+            print(f"  ⚠️  Class {cls}: requested {target} but only {available_instances[cls]} available")
+            target = available_instances[cls]
         
-        # Sort: images not yet selected come first
-        available_sorted = sorted(available, key=lambda img: img in selected)
+        # Get all images for this class with their instance counts
+        # Sort by: already selected (yes/no), then by instance count (desc for efficiency)
+        candidates = sorted(
+            class_to_images[cls],
+            key=lambda x: (x[0] in selected, -x[1])
+        )
         
-        for img in available_sorted:
-            if class_counts[cls] >= target:
+        for img_name, instance_count in candidates:
+            if class_instance_counts[cls] >= target:
                 break
-            if img not in selected:
-                selected.add(img)
-            # Count this image for all its classes
-            for c in image_to_classes[img]:
-                class_counts[c] += 1
+            
+            # Check how many instances this image would add
+            if class_instance_counts[cls] + instance_count <= target:
+                # Can add without exceeding
+                if img_name not in selected:
+                    selected.add(img_name)
+                    # Update counts for all classes in this image
+                    for c, cnt in image_to_class_counts[img_name].items():
+                        class_instance_counts[c] += cnt
+            elif class_instance_counts[cls] < target:
+                # Adding this would exceed target, but we still need more
+                # Add it only if it gets us closer to exact target
+                remaining = target - class_instance_counts[cls]
+                if remaining >= instance_count / 2:  # Threshold for inclusion
+                    if img_name not in selected:
+                        selected.add(img_name)
+                        for c, cnt in image_to_class_counts[img_name].items():
+                            class_instance_counts[c] += cnt
     
-    # Optionally add background-only images
+    # Second pass: try to reach exact targets by adding single-class images
+    for cls in all_classes:
+        target = samples_per_class.get(cls, available_instances[cls])
+        
+        if class_instance_counts[cls] < target:
+            # Find single-class images not yet selected
+            single_class_imgs = [
+                (img, cnt) for img, cnt in class_to_images[cls]
+                if img not in selected and len(image_to_class_counts[img]) == 1
+            ]
+            
+            for img_name, instance_count in single_class_imgs:
+                if class_instance_counts[cls] >= target:
+                    break
+                if class_instance_counts[cls] + instance_count <= target:
+                    selected.add(img_name)
+                    class_instance_counts[cls] += instance_count
+    
+    # Add background-only images
     if include_bg and background_only:
         bg_sample = random.sample(background_only, min(max_bg, len(background_only)))
         selected.update(bg_sample)
         print(f"  Added {len(bg_sample)} background-only images")
     
-    print(f"  Selected per class: {dict(sorted(class_counts.items()))}")
+    print(f"  Selected instances per class: {dict(sorted(class_instance_counts.items()))}")
+    print(f"  Target instances per class:   {dict(sorted(samples_per_class.items()))}")
+    
+    # Show differences
+    differences = {cls: class_instance_counts[cls] - samples_per_class.get(cls, 0) 
+                   for cls in samples_per_class.keys()}
+    print(f"  Difference (actual - target):  {dict(sorted(differences.items()))}")
     
     return list(selected)
 
 
 def reduce_split(split_name, samples_per_class, include_bg=False, max_bg=200, scale=1.0):
-    """Reduce a single split with class-balanced sampling."""
+    """Reduce a single split with exact class-balanced sampling."""
     src_images = os.path.join(RAW_DIR, split_name, "images")
     src_labels = os.path.join(RAW_DIR, split_name, "labels")
     dst_images = os.path.join(REDUCED_DIR, split_name, "images")
@@ -135,17 +194,17 @@ def reduce_split(split_name, samples_per_class, include_bg=False, max_bg=200, sc
     os.makedirs(dst_labels, exist_ok=True)
     
     # Analyze
-    class_to_images, image_to_classes, background_only = analyze_split(src_images, src_labels)
+    class_to_images, image_to_class_counts, background_only = analyze_split(src_images, src_labels)
     
-    # Scale samples_per_class for val/test (e.g., 0.2 for 20%)
+    # Scale samples_per_class for val/test
     scaled_spc = {
         c: int(n * scale) if n is not None else None 
         for c, n in samples_per_class.items()
     }
     
     # Sample
-    selected = balanced_sample(
-        class_to_images, image_to_classes, background_only,
+    selected = exact_balanced_sample(
+        class_to_images, image_to_class_counts, background_only,
         scaled_spc, include_bg, int(max_bg * scale)
     )
     
@@ -164,9 +223,34 @@ def main():
     random.seed(SEED)
     
     print("=" * 50)
-    print("CLASS-BALANCED DATASET REDUCTION")
+    print("EXACT CLASS-BALANCED DATASET REDUCTION")
     print("=" * 50)
-    print(f"\nTarget samples per class: {SAMPLES_PER_CLASS}")
+    
+    # Print debug info first
+    print("\n📍 PATH VERIFICATION:")
+    print(f"   Script: {os.path.abspath(__file__)}")
+    print(f"   Project Root: {PROJECT_ROOT}")
+    print(f"   Raw Dir: {RAW_DIR}")
+    print(f"   Reduced Dir: {REDUCED_DIR}")
+    
+    # Check if raw directory exists
+    if not os.path.exists(RAW_DIR):
+        print(f"\n❌ ERROR: RAW_DIR does not exist!")
+        print(f"   Expected: {RAW_DIR}")
+        print(f"\n💡 SOLUTION:")
+        print(f"   1. Check your dataset structure")
+        print(f"   2. Modify RAW_DIR in the script to point to your actual data")
+        print(f"   3. Expected structure:")
+        print(f"      {RAW_DIR}/")
+        print(f"      ├── train/")
+        print(f"      │   ├── images/")
+        print(f"      │   └── labels/")
+        print(f"      ├── val/")
+        print(f"      └── test/")
+        return
+    
+    print(f"\n✅ Raw directory found!")
+    print(f"\nTarget instances per class: {SAMPLES_PER_CLASS}")
     print(f"Include background-only: {INCLUDE_BACKGROUND_ONLY} (max {MAX_BACKGROUND_ONLY})")
     print(f"Output: {REDUCED_DIR}\n")
     
@@ -174,7 +258,7 @@ def main():
     if os.path.exists(REDUCED_DIR):
         shutil.rmtree(REDUCED_DIR)
     
-    # Reduce each split with class balancing
+    # Reduce each split
     print("\n--- TRAIN ---")
     reduce_split("train", SAMPLES_PER_CLASS, INCLUDE_BACKGROUND_ONLY, MAX_BACKGROUND_ONLY, scale=1.0)
     
@@ -185,7 +269,7 @@ def main():
     reduce_split("test", SAMPLES_PER_CLASS, INCLUDE_BACKGROUND_ONLY, MAX_BACKGROUND_ONLY, scale=0.2)
     
     print("\n" + "=" * 50)
-    print("✓ Done! Dataset balanced by class.")
+    print("✅ Done! Dataset balanced by exact class instances.")
     print("  Next: re-run preprocess_images.ipynb to regenerate masks")
     print("  Then: train with the balanced dataset")
     print("=" * 50)
