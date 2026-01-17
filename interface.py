@@ -59,16 +59,17 @@ CLASS_NAMES_UNET = [
     'Longitudinal_crack',
     'Transverse_crack',
     'Alligator_crack',
-    'Pothole',
-    'Other_damage'
+    'Other_damage',
+    'Pothole'
 ]
 
 CLASS_NAMES_YOLO = [
     'Longitudinal_crack',
+    'Longitudinal_crack',
     'Transverse_crack',
     'Alligator_crack',
-    'Pothole',
-    'Other_damage'
+    'Other_damage',
+    'Pothole'
 ]
 
 COLORS_UNET = np.array([
@@ -76,8 +77,8 @@ COLORS_UNET = np.array([
     [255, 0, 0],     # Longitudinal crack - Red
     [0, 255, 0],     # Transverse crack - Green
     [0, 0, 255],     # Alligator crack - Blue
-    [255, 255, 0],   # Pothole - Yellow
-    [255, 0, 255]    # Other damage - Magenta
+    [255, 0, 255],    # Other damage - Magenta
+    [255, 255, 0]   # Pothole - Yellow
 ], dtype=np.uint8)
 
 # ============ FONCTIONS UTILITAIRES ============
