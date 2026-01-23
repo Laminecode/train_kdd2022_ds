@@ -65,7 +65,6 @@ CLASS_NAMES_UNET = [
 
 CLASS_NAMES_YOLO = [
     'Longitudinal_crack',
-    'Longitudinal_crack',
     'Transverse_crack',
     'Alligator_crack',
     'Other_damage',
